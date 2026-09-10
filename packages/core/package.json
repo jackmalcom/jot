@@ -1,0 +1,14 @@
+{
+  "name": "@jot/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "better-auth": "1.7.3",
+    "drizzle-orm": "0.45.2",
+    "yjs": "13.6.31",
+    "y-protocols": "^1.0.6",
+    "lib0": "^0.2.114"
+  }
+}

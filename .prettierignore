@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+**/dist
+**/.wrangler
+data
+test-results*
+playwright-report
+package-lock.json
+apps/cloudflare/package-lock.json

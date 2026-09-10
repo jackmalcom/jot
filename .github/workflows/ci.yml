@@ -1,0 +1,33 @@
+name: Check jot
+on:
+  push:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check && npm test && npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm --prefix apps/cloudflare ci
+      - run: npm run cloudflare:check
+      - name: Test Durable Object runtime
+        run: |
+          npm --prefix apps/cloudflare run dev -- --var BETTER_AUTH_SECRET:browser-test-secret-at-least-32-characters --var OPERATOR_SECRET:browser-operator-test-secret > /tmp/jot-worker.log 2>&1 &
+          worker_pid=$!
+          trap 'kill "$worker_pid" || true' EXIT
+          curl --retry 30 --retry-connrefused --retry-delay 1 --fail http://localhost:8787/api/health
+          JOT_TEST_URL=http://localhost:8787 JOT_TEST_OUTPUT=test-results-cloudflare npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-traces
+          path: |
+            test-results/
+            test-results-cloudflare/

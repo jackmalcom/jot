@@ -1,0 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const directory = mkdtempSync(join(tmpdir(), 'jot-browser-'));
+process.env.PORT = '3101';
+process.env.APP_ORIGIN = 'http://localhost:3101';
+process.env.DATABASE_PATH = join(directory, 'jot.sqlite');
+process.env.BETTER_AUTH_SECRET = 'browser-test-secret-at-least-32-characters';
+process.env.OPERATOR_SECRET = 'browser-operator-test-secret';
+process.on('exit', () => rmSync(directory, { recursive: true, force: true }));
+await import('../apps/node/src/index.ts');

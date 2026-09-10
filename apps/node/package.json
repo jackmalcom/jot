@@ -1,0 +1,10 @@
+{
+  "name": "@jot/node",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@jot/core": "*",
+    "better-sqlite3": "^12.6.2",
+    "ws": "^8.19.0"
+  }
+}

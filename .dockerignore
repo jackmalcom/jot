@@ -1,0 +1,10 @@
+**/node_modules
+**/dist
+**/.wrangler
+.git
+.env
+**/.dev.vars
+data
+test-results
+playwright-report
+apps/cloudflare
