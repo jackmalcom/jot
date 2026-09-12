@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#fafafa" />
+  <!-- A lowercase j and the wordmark's accent dot, inside the maskable safe area. -->
+  <g fill="#25262a">
+    <circle cx="264" cy="156" r="25" />
+    <path d="M239 206h50v105c0 47-26 73-72 73h-24v-47h22c16 0 24-9 24-28z" />
+  </g>
+  <circle cx="335" cy="337" r="24" fill="#5065d9" />
+</svg>

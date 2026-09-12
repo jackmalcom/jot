@@ -1,0 +1,13 @@
+services:
+  caddy:
+    image: caddy:2
+    network_mode: host
+    volumes:
+      - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - jot-dev-caddy-data:/data
+      - jot-dev-caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  jot-dev-caddy-data:
+  jot-dev-caddy-config:

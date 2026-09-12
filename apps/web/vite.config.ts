@@ -15,6 +15,7 @@ const devOrigins = new Set(
   ].map((host) => 'http://' + host + ':5173'),
 );
 const appOrigin = process.env.APP_ORIGIN || 'http://localhost:5173';
+devOrigins.add('https://jot.local');
 
 export default defineConfig({
   plugins: [svelte()],

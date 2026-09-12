@@ -18,6 +18,28 @@ npm run dev
 
 Open http://localhost:5173. Vite proxies requests and WebSockets to the standalone server on port 3000. The server stores data in `data/jot.sqlite`; uploaded images can optionally use an S3-compatible bucket. Account provisioning works while the server is running. Without `.env`, development uses a temporary auth secret, so restarting signs users out.
 
+### Android PWA development over HTTPS
+
+On Linux with Docker and Avahi, keep `npm run dev` running and start the local HTTPS proxy:
+
+```sh
+docker compose -f compose.dev.yaml up -d
+sh scripts/dev-mdns.sh
+```
+
+The second command publishes `jot.local` on the LAN and stays running. The phone and computer must be on the same LAN. Open `https://jot.local` on the phone. Caddy forwards HTTPS and WebSockets to Vite; the development proxy accepts this origin for API requests.
+
+Caddy's local certificate authority persists in a Docker volume. Export its **public** root certificate and copy it to the phone:
+
+```sh
+docker compose -f compose.dev.yaml cp caddy:/data/caddy/pki/authorities/local/root.crt /tmp/jot-local-ca.crt
+adb push /tmp/jot-local-ca.crt /sdcard/Download/jot-local-ca.crt
+```
+
+On Android, use Settings → Security & privacy → More security & privacy → Encryption & credentials → Install a certificate → CA certificate. Authenticate and select `jot-local-ca.crt` from Downloads. Then install jot from Chrome at `https://jot.local`. Remove any earlier HTTP jot installation first. The browser's insecure-origin flag is unnecessary for this HTTPS setup.
+
+Avoid deleting the Caddy data volume unless you intend to replace the CA and trust the replacement on each device. Stop the proxy with `docker compose -f compose.dev.yaml down` (without `-v`). Caddy restarts with Docker; the Vite/API server and mDNS publisher must also be running for phone access.
+
 ## Self-hosting
 
 ```sh
