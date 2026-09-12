@@ -3,6 +3,8 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { hashPassword } from 'better-auth/crypto';
 import * as Y from 'yjs';
 import * as schema from './schema.ts';
+import { type ImageBucket } from './images.ts';
+export { imageBucket, type S3Env } from './images.ts';
 import { type Store, migrate } from './storage.ts';
 export { migrate, type Store } from './storage.ts';
 export { schema };
@@ -37,6 +39,7 @@ export interface Config {
   origin: string;
   secret: string;
   operatorSecret?: string;
+  imageBucket?: ImageBucket;
 }
 export class Problem extends Error {
   constructor(
@@ -625,8 +628,18 @@ export class Jot {
         if (!mime)
           throw new Problem(400, 'Choose a PNG, JPEG, GIF, or WebP image.');
         const id = crypto.randomUUID();
+        const bucket = this.config.imageBucket;
+        const objectKey = bucket ? 'images/' + id : null;
+        if (bucket && objectKey) await bucket.put(objectKey, bytes, mime);
         this.store.transaction(() => {
-          this.store.run('INSERT INTO images VALUES (?, ?, ?)', id, mime, size);
+          this.store.run(
+            'INSERT INTO images (id, mime, size, objectKey) VALUES (?, ?, ?, ?)',
+            id,
+            mime,
+            size,
+            objectKey,
+          );
+          if (objectKey) return;
           for (let i = 0; i < size; i += 512_000) {
             this.store.run(
               'INSERT INTO image_chunks VALUES (?, ?, ?)',
@@ -640,11 +653,25 @@ export class Jot {
       }
       const image = path.match(/^\/api\/images\/([a-zA-Z0-9-]+)$/);
       if (image && request.method === 'GET') {
-        const record = this.store.all<{ mime: string; size: number }>(
-          'SELECT * FROM images WHERE id = ?',
-          image[1],
-        )[0];
+        const record = this.store.all<{
+          mime: string;
+          size: number;
+          objectKey: string | null;
+        }>('SELECT * FROM images WHERE id = ?', image[1])[0];
         if (!record) throw new Problem(404, 'Image not found.');
+        if (record.objectKey) {
+          if (!this.config.imageBucket)
+            throw new Problem(503, 'Image bucket is not configured.');
+          const body = await this.config.imageBucket.get(record.objectKey);
+          if (!body) throw new Problem(404, 'Image not found.');
+          return new Response(body, {
+            headers: {
+              'Content-Type': record.mime,
+              'Cache-Control': 'private, no-cache',
+              'X-Content-Type-Options': 'nosniff',
+            },
+          });
+        }
         const bytes = new Uint8Array(record.size);
         let offset = 0;
         for (const chunk of this.store.all<{ data: Uint8Array | ArrayBuffer }>(

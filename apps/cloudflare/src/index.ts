@@ -2,11 +2,13 @@ import { DurableObject } from 'cloudflare:workers';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
 import {
   Jot,
+  imageBucket,
+  type S3Env,
   schema,
   type Store,
   type Peer,
 } from '../../../packages/core/src/index';
-interface Env {
+interface Env extends S3Env {
   JOT: DurableObjectNamespace<JotInstance>;
   ASSETS: Fetcher;
   APP_ORIGIN: string;
@@ -44,6 +46,7 @@ export class JotInstance extends DurableObject<Env> {
         origin: env.APP_ORIGIN,
         secret: env.BETTER_AUTH_SECRET,
         operatorSecret: env.OPERATOR_SECRET,
+        imageBucket: imageBucket(env),
       },
       () => ctx.getWebSockets().map((ws) => this.peer(ws)),
     );

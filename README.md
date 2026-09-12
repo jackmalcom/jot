@@ -16,7 +16,7 @@ npm run operator -- create --email you@example.com --name 'Your name'
 npm run dev
 ```
 
-Open http://localhost:5173. Vite proxies requests and WebSockets to the standalone server on port 3000. The server stores everything in `data/jot.sqlite`. Account provisioning works while the server is running. Without `.env`, development uses a temporary auth secret, so restarting signs users out.
+Open http://localhost:5173. Vite proxies requests and WebSockets to the standalone server on port 3000. The server stores data in `data/jot.sqlite`; uploaded images can optionally use an S3-compatible bucket. Account provisioning works while the server is running. Without `.env`, development uses a temporary auth secret, so restarting signs users out.
 
 ## Self-hosting
 
@@ -36,6 +36,65 @@ docker compose exec jot npm run operator -- create --email you@example.com --nam
 ```
 
 Reset a password with `npm run operator -- reset-password --email you@example.com`. This revokes existing sessions. For noninteractive use, provide the password in `JOT_ACCOUNT_PASSWORD`, not as a command-line argument. There is no public password-reset or signup flow and no email-service dependency.
+
+## Railway
+
+Deploy this repository as a Railway service from the repository root. `railway.json` selects the Dockerfile and `/api/health` startup check. Attach a persistent volume at `/data` and keep the service at **one replica in one region**; SQLite and collaboration run in a single process.
+
+Set these service variables before deployment:
+
+- `APP_ORIGIN=https://your-public-domain` (generate a Railway domain or use your custom domain).
+- `BETTER_AUTH_SECRET`: a stable random secret of at least 32 characters.
+- `OPERATOR_SECRET`: a separate random secret for remote account management.
+- `DATABASE_PATH=/data/jot.sqlite` (also the Docker image default).
+- `RAILWAY_RUN_UID=0`: Railway volumes are root-owned; this allows the image to write the mounted volume.
+
+Railway supplies `PORT`. Schema migrations run at application startup, after the volume is mounted. A volume is required even when images use a bucket. Configure volume backups in Railway. See Railway's [Dockerfile](https://docs.railway.com/builds/dockerfiles) and [volume documentation](https://docs.railway.com/volumes).
+
+After deployment, create your first account from your local checkout:
+
+```sh
+export JOT_OPERATOR_SECRET='your remote operator secret'
+npm run operator -- create --url https://your-public-domain \
+  --email you@example.com --name 'Your name'
+```
+
+## S3-compatible image storage
+
+Set these server variables together to send new uploads to a private bucket:
+
+| Variable               | Purpose                                                               |
+| ---------------------- | --------------------------------------------------------------------- |
+| `S3_ENDPOINT`          | Base endpoint, including `https://`, without a bucket name or path    |
+| `S3_BUCKET`            | Existing bucket name                                                  |
+| `S3_REGION`            | Signing region from the provider                                      |
+| `S3_ACCESS_KEY_ID`     | Bucket access key                                                     |
+| `S3_SECRET_ACCESS_KEY` | Bucket secret key                                                     |
+| `S3_FORCE_PATH_STYLE`  | `true` for path-style URLs; defaults to `false` (virtual-hosted URLs) |
+
+On Node, use environment variables or `.env`; Docker Compose forwards these variables. On Cloudflare, put endpoint, bucket, region, and URL style in Wrangler `vars`, and set the two credentials with `wrangler secret put S3_ACCESS_KEY_ID` and `wrangler secret put S3_SECRET_ACCESS_KEY`. For Wrangler development use `.dev.vars`. Partial configuration fails at startup.
+
+**Railway Buckets:** add a bucket to your project and reference its Credentials values in the app service variables above. Use the supplied base endpoint and region; current buckets use `S3_FORCE_PATH_STYLE=false`. Older buckets may require `true`. See [Railway Buckets](https://docs.railway.com/storage-buckets).
+
+**Cloudflare R2:** use `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, `S3_REGION=auto`, and `S3_FORCE_PATH_STYLE=true`, with S3 credentials scoped to read/write the bucket. Use the provider's jurisdiction-specific endpoint if applicable. This works from Railway, self-hosted Node, or the Worker. See [R2 S3 configuration](https://developers.cloudflare.com/r2/get-started/s3/).
+
+Images stay behind the authenticated `/api/images/<id>` route. The browser never receives bucket credentials or accesses the bucket directly, so public access and bucket CORS are unnecessary. Object keys are `images/<uuid>`; use a dedicated bucket per installation. SQLite retains image metadata and object keys. Existing SQLite images continue to load after enabling S3; they are not moved automatically. Disabling S3 leaves bucket images unavailable until configuration is restored. When changing buckets, copy the objects with their existing keys first. Back up both the database and bucket. Failed database writes after an upload may leave an unreferenced object; automatic garbage collection is not implemented.
+
+### Local bucket with Docker
+
+```sh
+docker compose -f compose.s3.yaml up -d
+```
+
+This starts persistent MinIO storage and creates `jot-images`. Uncomment the local S3 settings in `.env.example` in your `.env`, then restart `npm run dev`. The API is at `http://localhost:9000`; the console is at `http://localhost:9001` (login `jot-local` / `jot-local-secret`). These credentials and loopback-bound ports are for local development only.
+
+To run the app and bucket together in Docker, use the same variables but set `S3_ENDPOINT=http://s3:9000`, then run:
+
+```sh
+docker compose -f compose.yaml -f compose.s3.yaml up --build -d
+```
+
+Wait for `s3-init` to finish before uploading. Data survives container restarts in named volumes. The optional bucket service is independent of the Caddy development proxy. With the bucket running, verify the S3 adapter with `JOT_TEST_S3=1 node --import tsx --test tests/images.test.ts`.
 
 ## Cloudflare
 
@@ -80,7 +139,7 @@ Open http://localhost:8787. This optional check uses Wrangler; the ordinary loca
 - The home button beside **jot** opens up to eight recently viewed pages. History is stored per account in SQLite, is refreshed on opening Home, and excludes trashed pages.
 - Blocks include text, ordered/unordered lists, checkbox todos, images, page links, headings 1–6, toggles, and heading toggles 1–6. Type a slash command such as `/todo`, `/h3`, `/image`, `/page`, or `/heading toggle 2` and press Enter. Arrow keys select other matching commands; Escape dismisses the menu.
 - Toggles start collapsed for each reader. Click the caret to expand; Enter in the summary opens the body for editing. Expansion is local and does not change what another reader sees.
-- Image blocks accept HTTP(S) URLs or PNG/JPEG/GIF/WebP uploads up to 5 MB. Uploads are authenticated and stored in SQLite chunks on both hosting targets. Pasting an image also uploads it.
+- Image blocks accept HTTP(S) URLs or PNG/JPEG/GIF/WebP uploads up to 5 MB. Uploads are authenticated and stored in SQLite chunks by default, or in a configured private S3-compatible bucket on either hosting target. Pasting an image also uploads it.
 - On desktop, hover a block for its copy/delete menu. Formatting uses standard keyboard shortcuts (Ctrl/Cmd+K edits links); lists support Tab/Shift+Tab and blocks can move with Ctrl/Cmd+Shift+Up/Down. On mobile, a single formatting toolbar appears while editing and follows the visual viewport above the keyboard. Undo affects your own editing history.
 - Click the page title to rename in place. Enter or blur saves; Escape cancels.
 - Connected users see edits, cursor positions, and names. “Saved” means the server acknowledged persistence. During interruptions, content changes stay in browser IndexedDB and merge on reconnect, including after a refresh and subsequent sign-in.

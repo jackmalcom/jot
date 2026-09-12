@@ -31,6 +31,7 @@ export const migrations = [
       'CREATE TABLE image_chunks (imageId TEXT NOT NULL REFERENCES images(id) ON DELETE CASCADE, position INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(imageId, position))',
     ],
   },
+  { version: 4, statements: ['ALTER TABLE images ADD COLUMN objectKey TEXT'] },
 ];
 export function migrate(store: Store) {
   store.run(

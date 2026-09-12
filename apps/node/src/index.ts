@@ -2,7 +2,11 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { Jot, type Peer } from '../../../packages/core/src/index.ts';
+import {
+  Jot,
+  imageBucket,
+  type Peer,
+} from '../../../packages/core/src/index.ts';
 import { database } from './database.ts';
 const port = Number(process.env.PORT || 3000);
 const origin = process.env.APP_ORIGIN || `http://localhost:${port}`;
@@ -16,6 +20,7 @@ const jot = new Jot(
     origin,
     secret: process.env.BETTER_AUTH_SECRET || '',
     operatorSecret: process.env.OPERATOR_SECRET,
+    imageBucket: imageBucket(process.env),
   },
   () => [...peers],
 );

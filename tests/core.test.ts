@@ -400,3 +400,75 @@ test('image uploads persist in chunks and require authentication and supported c
     handle.close();
   }
 });
+
+test('bucket uploads coexist with SQLite images and survive app recreation', async () => {
+  const { app, handle } = setup();
+  try {
+    await app.provision({
+      action: 'create',
+      name: 'Alice',
+      email: 'alice@example.com',
+      password: 'test-password-1234',
+    });
+    const cookie = await login(app);
+    const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    const upload = () =>
+      app.handle(
+        new Request(origin + '/api/images', {
+          method: 'POST',
+          headers: { cookie, origin },
+          body: bytes,
+        }),
+      );
+    const legacy = await (await upload()).json();
+    const objects = new Map<string, Uint8Array>();
+    const bucket = {
+      async put(key: string, data: Uint8Array, mime: string) {
+        assert.equal(mime, 'image/png');
+        objects.set(key, data);
+      },
+      async get(key: string) {
+        const data = objects.get(key);
+        return data ? new Response(data.slice().buffer).body : null;
+      },
+    };
+    app.config.imageBucket = bucket;
+    const response = await upload();
+    assert.equal(response.status, 201);
+    const { src } = await response.json();
+    assert.equal(objects.size, 1);
+    assert.equal(handle.store.all('SELECT * FROM image_chunks').length, 1);
+    const fresh = new Jot(handle.store, handle.db, { ...app.config }, () => []);
+    for (const url of [legacy.src, src]) {
+      const read = await fresh.handle(
+        new Request(origin + url, { headers: { cookie } }),
+      );
+      assert.equal(read.status, 200);
+      assert.deepEqual(new Uint8Array(await read.arrayBuffer()), bytes);
+    }
+    assert.equal((await fresh.handle(new Request(origin + src))).status, 401);
+    fresh.config.imageBucket = undefined;
+    assert.equal(
+      (await fresh.handle(new Request(origin + src, { headers: { cookie } })))
+        .status,
+      503,
+    );
+    fresh.config.imageBucket = bucket;
+    objects.clear();
+    assert.equal(
+      (await fresh.handle(new Request(origin + src, { headers: { cookie } })))
+        .status,
+      404,
+    );
+    app.config.imageBucket = {
+      ...bucket,
+      async put() {
+        throw new Error('Bucket offline');
+      },
+    };
+    assert.equal((await upload()).status, 500);
+    assert.equal(handle.store.all('SELECT * FROM images').length, 2);
+  } finally {
+    handle.close();
+  }
+});
