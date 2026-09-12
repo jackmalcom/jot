@@ -81,17 +81,19 @@ npm run operator -- create --url https://your-public-domain \
   --email you@example.com --name 'Your name'
 ```
 
-### Deploying a prebuilt private image
+### Deploying a prebuilt release
 
-If Railway's remote builder is unavailable, `scripts/deploy-railway.mjs` builds the Docker image locally, pushes it to an authenticated private registry, and deploys the exact image digest through Railway's CLI. It requires Docker, npm, a Railway CLI login, and a clean Git checkout. Store these values in a private environment file outside the repository: `REGISTRY_HOST` (hostname only), `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `RAILWAY_SERVICE_ID`, and `RAILWAY_ENVIRONMENT_ID`.
+If Railway's remote builder is unavailable, `scripts/deploy-railway.mjs` builds the app in Docker locally and uploads a release archive to the configured private S3 bucket. Railway runs the public `node:24-bookworm-slim` image with a bootstrap that downloads the release using S3 credentials, verifies its SHA-256 checksum, and starts the app. This works on the Hobby plan without a private registry.
+
+It requires Docker, npm, a Railway CLI login, a clean Git checkout, and `RAILWAY_PROJECT_ID`, `RAILWAY_SERVICE_ID`, and `RAILWAY_ENVIRONMENT_ID` in a private environment file. S3 credentials are read from the service through the CLI and never printed.
 
 ```sh
 node --env-file=/path/to/private-railway.env scripts/deploy-railway.mjs
 ```
 
-The current installation uses a private `registry:2` service with its own persistent volume on Railway. Registry credentials are configured on the app service for image pulls; the registry requires authentication for both reads and writes. This adds a registry service and volume to the hosting cost. Keep it available for deployments and restarts. Temporary local Docker credentials are removed after deployment. The app uses the same Dockerfile, database volume, and S3 bucket as a normal source deployment.
+The bootstrap downloads the archive on each container start; keep the bucket and the referenced `deployments/<commit>/<checksum>.tar.gz` object available. Releases include production assets and dependencies built for Linux amd64. Keep the bootstrap runtime's Node major and OS aligned with the Dockerfile. The persistent database stays on `/data`, and uploaded images use the same private bucket.
 
-This command starts a deployment; check its status and health endpoint before considering it complete. With an image source, Git pushes run CI but do not publish a new app image: rerun this command after committing and pushing changes. Switching the Railway service back to its GitHub source restores remote builds when the builder is working again.
+The command starts a deployment; check its status and health endpoint before considering it complete. Git pushes run CI but do not publish a new release with this deployment method: rerun the command after committing and pushing changes. Restore the GitHub source and clear the custom start command to use Railway's Dockerfile builds again.
 
 ## S3-compatible image storage
 
