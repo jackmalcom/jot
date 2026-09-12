@@ -81,6 +81,18 @@ npm run operator -- create --url https://your-public-domain \
   --email you@example.com --name 'Your name'
 ```
 
+### Deploying a prebuilt private image
+
+If Railway's remote builder is unavailable, `scripts/deploy-railway.mjs` builds the Docker image locally, pushes it to an authenticated private registry, and deploys the exact image digest through Railway's CLI. It requires Docker, npm, a Railway CLI login, and a clean Git checkout. Store these values in a private environment file outside the repository: `REGISTRY_HOST` (hostname only), `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `RAILWAY_SERVICE_ID`, and `RAILWAY_ENVIRONMENT_ID`.
+
+```sh
+node --env-file=/path/to/private-railway.env scripts/deploy-railway.mjs
+```
+
+The current installation uses a private `registry:2` service with its own persistent volume on Railway. Registry credentials are configured on the app service for image pulls; the registry requires authentication for both reads and writes. This adds a registry service and volume to the hosting cost. Keep it available for deployments and restarts. Temporary local Docker credentials are removed after deployment. The app uses the same Dockerfile, database volume, and S3 bucket as a normal source deployment.
+
+This command starts a deployment; check its status and health endpoint before considering it complete. With an image source, Git pushes run CI but do not publish a new app image: rerun this command after committing and pushing changes. Switching the Railway service back to its GitHub source restores remote builds when the builder is working again.
+
 ## S3-compatible image storage
 
 Set these server variables together to send new uploads to a private bucket:
