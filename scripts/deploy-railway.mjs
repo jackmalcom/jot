@@ -165,7 +165,18 @@ try {
     [
       ...cli,
       'api',
-      'mutation($serviceId:String!,$environmentId:String!){serviceInstanceDeploy(serviceId:$serviceId,environmentId:$environmentId)}',
+      'mutation($id:String!){serviceConnect(id:$id,input:{image:"node:24-bookworm-slim"}){id}}',
+      '--variables',
+      '@-',
+    ],
+    { input: JSON.stringify({ id: serviceId }) },
+  );
+  run(
+    'npx',
+    [
+      ...cli,
+      'api',
+      'mutation($serviceId:String!,$environmentId:String!){serviceInstanceDeploy(serviceId:$serviceId,environmentId:$environmentId,latestCommit:true)}',
       '--variables',
       '@-',
     ],
