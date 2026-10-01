@@ -11,6 +11,9 @@ export async function operator(
     headers: { authorization: 'Bearer browser-operator-test-secret' },
     data,
   };
+  // Pace every call, including the first in a new worker or project, to stay
+  // below the shared 30-attempt/minute limit without retrying server errors.
+  await setTimeout(2100);
   let response = await request.post('/api/operator', options);
   if (response.status() !== 429) return response;
 
