@@ -3,7 +3,12 @@
   import { Editor } from '@tiptap/core';
   import Image from '@tiptap/extension-image';
   import { DOMSerializer, Fragment } from '@tiptap/pm/model';
-  import { NodeSelection, type SelectionBookmark } from '@tiptap/pm/state';
+  import type { SelectionBookmark } from '@tiptap/pm/state';
+  import {
+    blockHandleAnchor,
+    blockHandleTarget,
+    type BlockHandleAnchor,
+  } from './block-controls';
   import {
     Toggle,
     ToggleSummary,
@@ -75,6 +80,9 @@
   let wrap: HTMLDivElement;
   let blockPos = $state<number | null>(null);
   let blockTop = $state(0);
+  let blockHovered = false;
+  let blockAnchor: BlockHandleAnchor | null = null;
+  let blockTargetInvalidated = false;
   let blockMenu = $state(false);
   let blockMenuAbove = $state(false);
   let insertForm = $state<'image' | 'page' | null>(null);
@@ -168,6 +176,7 @@
       ? Math.max(0, innerHeight - vp.height - vp.offsetTop)
       : 0;
     positionSlash();
+    positionHandle(blockPos);
   }
   function positionSlash() {
     if (!editor || !slash) return;
@@ -183,25 +192,35 @@
         : bounds.bottom + 6,
     );
   }
-  function selectedBlock(instance: Editor) {
-    const selection = instance.state.selection;
-    if (selection instanceof NodeSelection) return selection.from;
-    const pos = selection.$from;
-    let depth = pos.depth;
-    while (
-      depth > 1 &&
-      !['listItem', 'taskItem', 'toggle'].includes(pos.node(depth).type.name)
-    )
-      depth--;
-    return depth ? pos.before(depth) : null;
-  }
   function positionHandle(pos: number | null) {
     if (!editor || pos == null) return;
     const dom = editor.view.nodeDOM(pos);
     if (dom instanceof HTMLElement) {
+      // Container blocks (lists and toggles) align with their first text line,
+      // not the top of the whole container or the center of wrapped content.
+      const textSelector = 'p, h1, h2, h3, h4, h5, h6, .toggle-summary';
+      const text = dom.matches(textSelector)
+        ? dom
+        : dom.querySelector<HTMLElement>(textSelector);
+      let center = dom.getBoundingClientRect().top + 15;
+      if (text) {
+        const style = getComputedStyle(text);
+        const lineHeight =
+          parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+        center =
+          text.getBoundingClientRect().top +
+          parseFloat(style.borderTopWidth) +
+          parseFloat(style.paddingTop) +
+          lineHeight / 2;
+      }
+      if (
+        !blockAnchor?.relative ||
+        blockAnchor.pos !== pos ||
+        blockAnchor.node !== editor.state.doc.nodeAt(pos)
+      )
+        blockAnchor = blockHandleAnchor(editor.state, pos);
       blockPos = pos;
-      blockTop =
-        dom.getBoundingClientRect().top - wrap.getBoundingClientRect().top;
+      blockTop = center - wrap.getBoundingClientRect().top;
     }
   }
   function hoverBlock(event: PointerEvent) {
@@ -213,9 +232,15 @@
     if (!node || !host.contains(node)) return;
     const pos = editor.view.posAtDOM(node, 0);
     const resolved = editor.state.doc.resolve(pos);
+    blockTargetInvalidated = false;
+    blockHovered = true;
     if (resolved.depth && resolved.parent.type.name !== 'doc')
       positionHandle(resolved.before());
     else positionHandle(pos);
+  }
+  function useCaretBlock() {
+    blockHovered = false;
+    blockTargetInvalidated = false;
   }
   onMount(() => {
     let cancelled = false;
@@ -302,6 +327,7 @@
             },
             handleKeyDown: (_, event) => {
               if (event.isComposing) return false;
+              useCaretBlock();
               if (
                 (event.ctrlKey || event.metaKey) &&
                 event.key.toLowerCase() === 'k'
@@ -387,13 +413,25 @@
               insertBookmark = insertBookmark.map(transaction.mapping);
             if (linkBookmark)
               linkBookmark = linkBookmark.map(transaction.mapping);
-            if (blockMenu && blockPos != null) {
-              const mapped = transaction.mapping.mapResult(blockPos);
-              if (mapped.deleted) {
-                blockMenu = false;
-                blockPos = null;
-              } else positionHandle(mapped.pos);
-            } else positionHandle(selectedBlock(instance));
+            // Keep the mouse target stable while crossing into the gutter.
+            // Collaboration/presence transactions must not switch it back to
+            // the caret's block before the user can open its actions.
+            const nextBlock = blockTargetInvalidated
+              ? null
+              : blockHandleTarget(
+                  transaction,
+                  blockAnchor,
+                  blockMenu || blockHovered,
+                  instance.state,
+                );
+            if (nextBlock == null) {
+              if ((blockMenu || blockHovered) && blockAnchor)
+                blockTargetInvalidated = true;
+              blockMenu = false;
+              blockHovered = false;
+              blockPos = null;
+              blockAnchor = null;
+            } else positionHandle(nextBlock);
             const fromPos = instance.state.selection.$from;
             const text = fromPos.parent.isTextblock
               ? fromPos.parent.textBetween(0, fromPos.parentOffset, '\n')
@@ -681,15 +719,20 @@
     if (!editor) return;
     const selection = window.getSelection();
     if (
-      selection?.anchorNode && selection.focusNode &&
+      selection?.anchorNode &&
+      selection.focusNode &&
       editor.view.dom.contains(selection.anchorNode) &&
       editor.view.dom.contains(selection.focusNode)
     ) {
-      editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(
-        editor.state.doc,
-        editor.view.posAtDOM(selection.anchorNode, selection.anchorOffset),
-        editor.view.posAtDOM(selection.focusNode, selection.focusOffset),
-      )));
+      editor.view.dispatch(
+        editor.state.tr.setSelection(
+          TextSelection.create(
+            editor.state.doc,
+            editor.view.posAtDOM(selection.anchorNode, selection.anchorOffset),
+            editor.view.posAtDOM(selection.focusNode, selection.focusOffset),
+          ),
+        ),
+      );
     }
     linkBookmark = editor.state.selection.getBookmark();
     linkValue = editor.getAttributes('link').href || '';
@@ -739,7 +782,15 @@
   }
 </script>
 
-<div class="editor-wrap" class:editor-focused={focused} bind:this={wrap}>
+<div
+  class="editor-wrap"
+  class:editor-focused={focused}
+  bind:this={wrap}
+  onpointerleave={() => {
+    blockHovered = false;
+  }}
+  role="presentation"
+>
   {#if people.length}<div class="collaborators" aria-label="Other editors">
       {#each people as person}<span style={`--person-color:${person.color}`}
           ><i></i>{person.name}</span
@@ -920,6 +971,9 @@
     class="editor-content"
     bind:this={host}
     onpointermove={hoverBlock}
+    onbeforeinput={useCaretBlock}
+    oncompositionstart={useCaretBlock}
+    onpointerdown={useCaretBlock}
     role="presentation"
   ></div>
   {#if ready && !deleted && blockPos != null}

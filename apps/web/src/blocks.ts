@@ -1,4 +1,5 @@
 import { Node, mergeAttributes } from '@tiptap/core';
+import { TextSelection } from '@tiptap/pm/state';
 
 export interface PageOption {
   id: string;
@@ -35,6 +36,54 @@ export const ToggleSummary = Node.create({
   ],
   addKeyboardShortcuts() {
     return {
+      Backspace: () =>
+        this.editor.commands.command(({ state, tr, dispatch }) => {
+          const { selection } = state;
+          if (!(selection instanceof TextSelection) || !selection.$cursor)
+            return false;
+          const { $cursor } = selection;
+          if (
+            $cursor.parent.type.name !== this.name ||
+            $cursor.parent.content.size !== 0 ||
+            $cursor.depth < 2
+          )
+            return false;
+
+          const toggleDepth = $cursor.depth - 1;
+          const toggle = $cursor.node(toggleDepth);
+          if (toggle.type.name !== 'toggle') return false;
+          const body = toggle.lastChild;
+          const paragraph = body?.firstChild;
+          // Only unwrap the initial empty structure. textContent alone would
+          // also classify images, nested toggles, and other non-text blocks as
+          // empty, and deleting their wrapper would lose the hidden content.
+          // Consume Backspace otherwise so generic/native deletion cannot
+          // normalize the required summary or alter the hidden body.
+          if (
+            body?.type.name !== 'toggleBody' ||
+            body.childCount !== 1 ||
+            paragraph?.type.name !== 'paragraph' ||
+            paragraph.content.size !== 0
+          )
+            return true;
+
+          const pos = $cursor.before(toggleDepth);
+          const $pos = state.doc.resolve(pos);
+          if (
+            !$pos.parent.canReplaceWith(
+              $pos.index(),
+              $pos.index() + 1,
+              paragraph.type,
+            )
+          )
+            return true;
+          if (dispatch) {
+            tr.replaceWith(pos, pos + toggle.nodeSize, paragraph);
+            tr.setSelection(TextSelection.create(tr.doc, pos + 1));
+            tr.scrollIntoView();
+          }
+          return true;
+        }),
       Enter: () => {
         const { $from } = this.editor.state.selection;
         if ($from.parent.type.name !== this.name) return false;
@@ -91,9 +140,31 @@ export const Toggle = Node.create({
       button.type = 'button';
       button.className = 'toggle-disclosure';
       button.contentEditable = 'false';
-      button.textContent = '›';
+      button.spellcheck = false;
       button.setAttribute('aria-label', 'Expand toggle');
       button.setAttribute('aria-expanded', 'false');
+      const icon = document.createElementNS(
+        'http://www.w3.org/2000/svg',
+        'svg',
+      );
+      icon.classList.add('toggle-disclosure-icon');
+      icon.setAttribute('viewBox', '0 0 24 24');
+      icon.setAttribute('width', '16');
+      icon.setAttribute('height', '16');
+      icon.setAttribute('fill', 'none');
+      icon.setAttribute('stroke', 'currentColor');
+      icon.setAttribute('stroke-width', '2');
+      icon.setAttribute('stroke-linecap', 'round');
+      icon.setAttribute('stroke-linejoin', 'round');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.setAttribute('focusable', 'false');
+      const chevron = document.createElementNS(
+        'http://www.w3.org/2000/svg',
+        'path',
+      );
+      chevron.setAttribute('d', 'm9 6 6 6-6 6');
+      icon.append(chevron);
+      button.append(icon);
       const contentDOM = document.createElement('div');
       contentDOM.className = 'toggle-inner';
       button.onclick = () => {
