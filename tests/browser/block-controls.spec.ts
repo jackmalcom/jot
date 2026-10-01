@@ -54,6 +54,24 @@ async function centerY(locator: Locator) {
   return box!.y + box!.height / 2;
 }
 
+async function expectBlockText(blocks: Locator, expected: string[]) {
+  // Presence labels are DOM decorations, not saved document text. Strip only
+  // those widgets from a clone, preserving exact assertions for the content.
+  await expect
+    .poll(() =>
+      blocks.evaluateAll((elements) =>
+        elements.map((element) => {
+          const clone = element.cloneNode(true) as HTMLElement;
+          clone
+            .querySelectorAll('.collaboration-carets__caret')
+            .forEach((caret) => caret.remove());
+          return clone.textContent;
+        }),
+      ),
+    )
+    .toEqual(expected);
+}
+
 test('toggle controls align with the first summary line at every heading level', async ({
   page,
   request,
@@ -236,9 +254,9 @@ test('block actions keep their hovered target through collaborative updates', as
     await otherFirst.click();
     await other.keyboard.press('Home');
     await other.keyboard.insertText('Remote ');
-    await expect(editor.locator('p').first()).toHaveText(
+    await expectBlockText(editor.locator('p').first(), [
       'Remote First paragraph',
-    );
+    ]);
     expect(
       Math.abs((await centerY(handle)) - (await firstLineCenter(target))),
     ).toBeLessThan(1);
@@ -247,7 +265,9 @@ test('block actions keep their hovered target through collaborative updates', as
       .getByRole('menuitem', { name: 'Delete block', exact: true })
       .click();
     await expect(editor).not.toContainText('Hovered second paragraph');
-    await expect(editor).toContainText('Remote First paragraph');
+    await expectBlockText(editor.locator('p').first(), [
+      'Remote First paragraph',
+    ]);
   } finally {
     await context.close();
   }
@@ -301,7 +321,7 @@ test('remote deletion closes block actions without retargeting an identical neig
     await other
       .getByRole('menuitem', { name: 'Delete block', exact: true })
       .click();
-    await expect(editor.locator('p')).toHaveText([
+    await expectBlockText(editor.locator('p'), [
       'First paragraph',
       'Same paragraph',
     ]);
@@ -314,9 +334,9 @@ test('remote deletion closes block actions without retargeting an identical neig
     await otherEditor.locator('p').first().click();
     await other.keyboard.press('Home');
     await other.keyboard.insertText('Remote ');
-    await expect(editor.locator('p').first()).toHaveText(
+    await expectBlockText(editor.locator('p').first(), [
       'Remote First paragraph',
-    );
+    ]);
     await expect(
       page.getByRole('button', { name: 'Block actions', exact: true }),
     ).toHaveCount(0);

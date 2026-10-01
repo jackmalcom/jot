@@ -179,8 +179,13 @@ test('Backspace unwraps an empty nested toggle without changing its parent', asy
   await expect(nested).toHaveAttribute('data-level', '2');
   await expect(nested.locator('.toggle-summary')).toHaveText('');
   await expect(nested.locator('.toggle-body > p')).toHaveText('');
+  await expect(body.locator(':scope > p')).toHaveCount(originalParagraphCount);
+  await expectCaretIn(nested.locator('.toggle-summary'));
   await page.keyboard.press('ControlOrMeta+Shift+z');
   await expect(nested).toHaveCount(0);
+  await expect(body.locator(':scope > p')).toHaveCount(
+    originalParagraphCount + 1,
+  );
   await expectCaretIn(body.locator(':scope > p').first());
   await page.keyboard.insertText('Nested replacement');
   await expect(body.locator(':scope > p').first()).toHaveText(

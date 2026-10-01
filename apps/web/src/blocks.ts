@@ -1,5 +1,98 @@
 import { Node, mergeAttributes } from '@tiptap/core';
-import { TextSelection } from '@tiptap/pm/state';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import {
+  getRelativeSelection,
+  relativePositionToAbsolutePosition,
+  ySyncPluginKey,
+  yUndoPluginKey,
+} from '@tiptap/y-tiptap';
+import type { UndoManager } from 'yjs';
+
+type RelativeSelection = ReturnType<typeof getRelativeSelection>;
+const toggleUnwrapHistoryKey = new PluginKey<RelativeSelection | null>(
+  'toggleUnwrapHistory',
+);
+type HistoryItem = UndoManager['undoStack'][number];
+type UnwrapSelection = { before: RelativeSelection; after: RelativeSelection };
+
+export function toggleUnwrapHistory() {
+  return new Plugin<RelativeSelection | null>({
+    key: toggleUnwrapHistoryKey,
+    state: {
+      init: () => null,
+      apply: (tr, _previous, oldState) => {
+        const sync = ySyncPluginKey.getState(oldState);
+        return tr.getMeta(toggleUnwrapHistoryKey) && sync?.binding
+          ? getRelativeSelection(sync.binding, oldState)
+          : null;
+      },
+    },
+    view(view) {
+      const manager: UndoManager | undefined = yUndoPluginKey.getState(
+        view.state,
+      )?.undoManager;
+      if (!manager) return {};
+      const remember = ({ stackItem }: { stackItem: HistoryItem }) => {
+        const previous = manager.currStackItem?.meta.get(
+          toggleUnwrapHistoryKey,
+        );
+        if (previous) {
+          stackItem.meta.set(toggleUnwrapHistoryKey, previous);
+          return;
+        }
+        const before = toggleUnwrapHistoryKey.getState(view.state);
+        const sync = ySyncPluginKey.getState(view.state);
+        if (before && sync?.binding) {
+          // Capture each side while its PM document and Yjs mapping agree.
+          // y-tiptap's undo snapshot can otherwise use the restored mapping
+          // with the old document and move a nested cursor outside its toggle.
+          stackItem.meta.set(toggleUnwrapHistoryKey, {
+            before,
+            after: getRelativeSelection(sync.binding, view.state),
+          } satisfies UnwrapSelection);
+          manager.stopCapturing();
+        }
+      };
+      const restore = ({
+        stackItem,
+        type,
+      }: {
+        stackItem: HistoryItem;
+        type: 'undo' | 'redo';
+      }) => {
+        const saved: UnwrapSelection | undefined = stackItem.meta.get(
+          toggleUnwrapHistoryKey,
+        );
+        const sync = ySyncPluginKey.getState(view.state);
+        if (!saved || !sync?.binding) return;
+        const relative = type === 'undo' ? saved.before : saved.after;
+        const pos = relativePositionToAbsolutePosition(
+          sync.doc,
+          sync.type,
+          relative.anchor,
+          sync.binding.mapping,
+        );
+        // The original text block may have been deleted by a collaborator.
+        if (pos == null || !view.state.doc.resolve(pos).parent.isTextblock)
+          return;
+        view.dispatch(
+          view.state.tr
+            .setSelection(TextSelection.create(view.state.doc, pos))
+            .setMeta('addToHistory', false)
+            .scrollIntoView(),
+        );
+      };
+      manager.on('stack-item-added', remember);
+      manager.on('stack-item-popped', restore);
+      return {
+        destroy() {
+          manager.off('stack-item-added', remember);
+          manager.off('stack-item-popped', restore);
+        },
+      };
+    },
+  });
+}
 
 export interface PageOption {
   id: string;
@@ -34,6 +127,7 @@ export const ToggleSummary = Node.create({
     }),
     0,
   ],
+  addProseMirrorPlugins: () => [toggleUnwrapHistory()],
   addKeyboardShortcuts() {
     return {
       Backspace: () =>
@@ -78,6 +172,8 @@ export const ToggleSummary = Node.create({
           )
             return true;
           if (dispatch) {
+            yUndoPluginKey.getState(state)?.undoManager.stopCapturing();
+            tr.setMeta(toggleUnwrapHistoryKey, true);
             tr.replaceWith(pos, pos + toggle.nodeSize, paragraph);
             tr.setSelection(TextSelection.create(tr.doc, pos + 1));
             tr.scrollIntoView();

@@ -14,13 +14,25 @@ import {
   NodeSelection,
   TextSelection,
   type Transaction,
+  type PluginView,
 } from '@tiptap/pm/state';
 import { history, redo, undo } from '@tiptap/pm/history';
+import type { EditorView } from '@tiptap/pm/view';
+import {
+  initProseMirrorDoc,
+  prosemirrorToYDoc,
+  redo as yRedo,
+  undo as yUndo,
+  ySyncPlugin,
+  yUndoPlugin,
+} from '@tiptap/y-tiptap';
+import * as Y from 'yjs';
 import {
   Toggle,
   ToggleBody,
   ToggleSummary,
   pageReference,
+  toggleUnwrapHistory,
 } from '../apps/web/src/blocks.ts';
 
 const schema = getSchema([
@@ -54,19 +66,45 @@ const toggle = ({
 // and history, without requiring a DOM or a browser. Only Tiptap's command
 // dispatch boundary is stubbed; key-event routing and native spellchecking
 // still require the browser suite.
-function harness(nodes: Node[], cursor: number) {
-  let state = EditorState.create({
-    doc: schema.node('doc', null, nodes),
-    plugins: [history()],
-  });
+function harness(nodes: Node[], cursor: number, collaborative = false) {
+  let doc = schema.node('doc', null, nodes);
+  const ydoc = collaborative ? prosemirrorToYDoc(doc) : null;
+  const fragment = ydoc?.getXmlFragment('prosemirror');
+  let plugins = [history()];
+  if (fragment) {
+    const initial = initProseMirrorDoc(fragment, schema);
+    doc = initial.doc;
+    plugins = [
+      ySyncPlugin(fragment, { mapping: initial.mapping }),
+      yUndoPlugin(),
+      toggleUnwrapHistory(),
+    ];
+  }
+  let state = EditorState.create({ doc, plugins });
   state = state.apply(
     state.tr.setSelection(TextSelection.create(state.doc, cursor)),
   );
   let documentTransactions = 0;
+  const pluginViews: PluginView[] = [];
   let shouldDispatch = true;
   function dispatch(tr: Transaction) {
+    const previous = state;
     state = state.apply(tr);
     if (tr.docChanged) documentTransactions++;
+    for (const pluginView of pluginViews) pluginView.update?.(view, previous);
+  }
+  // The real Yjs sync/history plugin lifecycle needs only state/dispatch for
+  // these tests. DOM selection and keyboard routing remain browser coverage.
+  const view = {
+    get state() {
+      return state;
+    },
+    hasFocus: () => false,
+    dispatch,
+  } as unknown as EditorView;
+  for (const plugin of plugins) {
+    const pluginView = plugin.spec.view?.(view);
+    if (pluginView) pluginViews.push(pluginView);
   }
   const editor = {
     commands: {
@@ -100,6 +138,14 @@ function harness(nodes: Node[], cursor: number) {
       return documentTransactions;
     },
     dispatch,
+    ydoc,
+    fragment,
+    undo: () => (ydoc ? yUndo(state) : undo(state, dispatch)),
+    redo: () => (ydoc ? yRedo(state) : redo(state, dispatch)),
+    destroy() {
+      for (const pluginView of pluginViews.reverse()) pluginView.destroy?.();
+      ydoc?.destroy();
+    },
     backspace(dryRun = false) {
       shouldDispatch = !dryRun;
       try {
@@ -247,4 +293,87 @@ test('checking whether empty-toggle Backspace can run does not mutate the docume
   assert.ok(h.state.doc.eq(before));
   assert.equal(h.state.selection.from, 2);
   assert.equal(h.documentTransactions, 0);
+});
+
+test('Yjs undo and redo preserve the nested toggle caret through repeated cycles', () => {
+  for (const level of [0, 2, 6]) {
+    const inner = toggle({ level });
+    const outer = toggle({ summary: 'Outer summary', body: [inner] });
+    const innerPos = 2 + outer.firstChild!.nodeSize;
+    const h = harness([outer, paragraph()], innerPos + 2, true);
+    try {
+      const before = h.state.doc;
+      assert.equal(h.backspace(), true);
+      const after = h.state.doc;
+      assert.equal(h.state.selection.from, innerPos + 1);
+      for (let cycle = 0; cycle < 3; cycle++) {
+        assert.equal(h.undo(), true);
+        assert.ok(h.state.doc.eq(before));
+        assert.equal(h.state.selection.from, innerPos + 2);
+        assert.equal(h.state.selection.$from.parent.type.name, 'toggleSummary');
+        assert.equal(h.redo(), true);
+        assert.ok(h.state.doc.eq(after));
+        assert.equal(h.state.selection.from, innerPos + 1);
+        assert.equal(h.state.selection.$from.parent.type.name, 'paragraph');
+        assert.equal(h.state.selection.$from.depth, 3);
+      }
+    } finally {
+      h.destroy();
+    }
+  }
+});
+
+test('Yjs toggle history follows collaborative edits before the nested replacement', () => {
+  const inner = toggle({ level: 2 });
+  const outer = toggle({
+    summary: 'Outer summary',
+    body: [paragraph('Before'), inner],
+  });
+  const innerPos =
+    2 + outer.firstChild!.nodeSize + outer.lastChild!.firstChild!.nodeSize;
+  const h = harness([outer, paragraph()], innerPos + 2, true);
+  try {
+    assert.equal(h.backspace(), true);
+    const summary = (h.fragment!.get(0) as Y.XmlElement).get(0) as Y.XmlElement;
+    const text = summary.get(0) as Y.XmlText;
+    h.ydoc!.transact(() => text.insert(0, 'Remote '), 'remote');
+    assert.equal(h.undo(), true);
+    assert.equal(h.state.selection.from, innerPos + 2 + 'Remote '.length);
+    assert.equal(h.state.selection.$from.parent.type.name, 'toggleSummary');
+    assert.equal(h.redo(), true);
+    assert.equal(h.state.selection.from, innerPos + 1 + 'Remote '.length);
+    assert.equal(h.state.selection.$from.depth, 3);
+    assert.equal(
+      h.state.doc.firstChild!.firstChild!.textContent,
+      'Remote Outer summary',
+    );
+  } finally {
+    h.destroy();
+  }
+});
+
+test('Yjs empty-toggle unwrapping is separate from adjacent character edits', () => {
+  const inner = toggle({ summary: 'A' });
+  const outer = toggle({ summary: 'Outer summary', body: [inner] });
+  const innerPos = 2 + outer.firstChild!.nodeSize;
+  const h = harness([outer, paragraph()], innerPos + 3, true);
+  try {
+    h.dispatch(h.state.tr.delete(innerPos + 2, innerPos + 3));
+    const emptyToggle = h.state.doc;
+    assert.equal(h.backspace(), true);
+    const replacement = h.state.doc;
+    h.dispatch(h.state.tr.insertText('Replacement'));
+    assert.equal(h.undo(), true);
+    assert.ok(h.state.doc.eq(replacement), 'undo only the following typing');
+    assert.equal(h.undo(), true);
+    assert.ok(h.state.doc.eq(emptyToggle), 'undo only the toggle unwrap');
+    assert.equal(h.state.selection.from, innerPos + 2);
+    assert.equal(h.undo(), true);
+    assert.equal(
+      h.state.doc.firstChild!.lastChild!.firstChild!.firstChild!.textContent,
+      'A',
+    );
+  } finally {
+    h.destroy();
+  }
 });
