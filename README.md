@@ -59,6 +59,8 @@ docker compose exec jot npm run operator -- create --email you@example.com --nam
 
 Reset a password with `npm run operator -- reset-password --email you@example.com`. This revokes existing sessions. For noninteractive use, provide the password in `JOT_ACCOUNT_PASSWORD`, not as a command-line argument. There is no public password-reset or signup flow and no email-service dependency.
 
+Sign-ins last 30 days. Better Auth's built-in rolling sessions renew the database session and browser cookie for another 30 days on an authenticated HTTP request once at least one day has elapsed since the last renewal. Opening the app checks the session; normal API activity also renews it. After 30 days without renewal, sign in again. Cookie caching stays disabled so sign-out and password-reset revocation take effect immediately. Keep `BETTER_AUTH_SECRET` and the database stable across deployments to preserve sessions.
+
 ## Railway
 
 Deploy this repository as a Railway service from the repository root. `railway.json` selects the Dockerfile and `/api/health` startup check. Attach a persistent volume at `/data` and keep the service at **one replica in one region**; SQLite and collaboration run in a single process.
