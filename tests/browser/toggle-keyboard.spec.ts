@@ -1,24 +1,8 @@
-import {
-  test,
-  expect,
-  type APIRequestContext,
-  type Locator,
-  type Page,
-} from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
+import { password, provision } from './operator';
 
-const password = 'browser-test-password-123';
 const editorFor = (page: Page) =>
   page.getByRole('textbox', { name: 'Page content' });
-
-async function provision(request: APIRequestContext) {
-  const email = `toggle-keyboard-${crypto.randomUUID()}@example.com`;
-  const response = await request.post('/api/operator', {
-    headers: { authorization: 'Bearer browser-operator-test-secret' },
-    data: { action: 'create', name: 'Toggle keyboard', email, password },
-  });
-  expect(response.status(), await response.text()).toBe(200);
-  return email;
-}
 
 async function login(page: Page, email: string) {
   await page.goto('/');
@@ -70,7 +54,7 @@ async function expectCaretIn(node: Locator) {
 }
 
 test.beforeEach(async ({ page, request }, testInfo) => {
-  await login(page, await provision(request));
+  await login(page, await provision(request, 'Toggle keyboard'));
   await create(page, `Toggle ${testInfo.project.name} ${crypto.randomUUID()}`);
   await editorFor(page).click();
 });

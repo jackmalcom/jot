@@ -5,15 +5,10 @@ import {
   type APIRequestContext,
   type Locator,
 } from '@playwright/test';
+import { password, provision } from './operator';
 
 async function openEditor(page: Page, request: APIRequestContext) {
-  const email = `controls-${crypto.randomUUID()}@example.com`;
-  const password = 'browser-test-password-123';
-  const response = await request.post('/api/operator', {
-    headers: { authorization: 'Bearer browser-operator-test-secret' },
-    data: { action: 'create', name: 'Controls', email, password },
-  });
-  expect(response.status(), await response.text()).toBe(200);
+  const email = await provision(request, 'Controls');
   await page.goto('/');
   await page.getByLabel('Email', { exact: true }).fill(email);
   await page.getByLabel('Password', { exact: true }).fill(password);

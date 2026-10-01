@@ -1,9 +1,5 @@
-import {
-  test,
-  expect,
-  type Page,
-  type APIRequestContext,
-} from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { operator, password, provision } from './operator';
 const content = (page: Page) =>
   page.getByRole('textbox', { name: 'Page content' }).evaluate((el) => {
     const clone = el.cloneNode(true) as HTMLElement;
@@ -12,16 +8,6 @@ const content = (page: Page) =>
       .forEach((node) => node.remove());
     return clone.textContent;
   });
-const password = 'browser-test-password-123';
-async function provision(request: APIRequestContext, name: string) {
-  const email = `${name.toLowerCase()}-${crypto.randomUUID()}@example.com`;
-  const response = await request.post('/api/operator', {
-    headers: { authorization: 'Bearer browser-operator-test-secret' },
-    data: { action: 'create', name, email, password },
-  });
-  expect(response.status(), await response.text()).toBe(200);
-  return email;
-}
 async function login(page: Page, email: string) {
   await page.goto('/');
   await page.getByLabel('Email', { exact: true }).fill(email);
@@ -253,9 +239,10 @@ test('pending edits survive refresh and deletion, and expired sessions can resum
   const editor = page.getByRole('textbox', { name: 'Page content' });
   await editor.fill('Durable content');
   await expect(page.locator('.save-status')).toHaveText('Saved');
-  const reset = await request.post('/api/operator', {
-    headers: { authorization: 'Bearer browser-operator-test-secret' },
-    data: { action: 'reset-password', email, password },
+  const reset = await operator(request, {
+    action: 'reset-password',
+    email,
+    password,
   });
   expect(reset.ok()).toBe(true);
   await expect(
