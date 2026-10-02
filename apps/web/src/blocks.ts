@@ -1,4 +1,98 @@
 import { Node, mergeAttributes } from '@tiptap/core';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import {
+  getRelativeSelection,
+  relativePositionToAbsolutePosition,
+  ySyncPluginKey,
+  yUndoPluginKey,
+} from '@tiptap/y-tiptap';
+import type { UndoManager } from 'yjs';
+
+type RelativeSelection = ReturnType<typeof getRelativeSelection>;
+const toggleUnwrapHistoryKey = new PluginKey<RelativeSelection | null>(
+  'toggleUnwrapHistory',
+);
+type HistoryItem = UndoManager['undoStack'][number];
+type UnwrapSelection = { before: RelativeSelection; after: RelativeSelection };
+
+export function toggleUnwrapHistory() {
+  return new Plugin<RelativeSelection | null>({
+    key: toggleUnwrapHistoryKey,
+    state: {
+      init: () => null,
+      apply: (tr, _previous, oldState) => {
+        const sync = ySyncPluginKey.getState(oldState);
+        return tr.getMeta(toggleUnwrapHistoryKey) && sync?.binding
+          ? getRelativeSelection(sync.binding, oldState)
+          : null;
+      },
+    },
+    view(view) {
+      const manager: UndoManager | undefined = yUndoPluginKey.getState(
+        view.state,
+      )?.undoManager;
+      if (!manager) return {};
+      const remember = ({ stackItem }: { stackItem: HistoryItem }) => {
+        const previous = manager.currStackItem?.meta.get(
+          toggleUnwrapHistoryKey,
+        );
+        if (previous) {
+          stackItem.meta.set(toggleUnwrapHistoryKey, previous);
+          return;
+        }
+        const before = toggleUnwrapHistoryKey.getState(view.state);
+        const sync = ySyncPluginKey.getState(view.state);
+        if (before && sync?.binding) {
+          // Capture each side while its PM document and Yjs mapping agree.
+          // y-tiptap's undo snapshot can otherwise use the restored mapping
+          // with the old document and move a nested cursor outside its toggle.
+          stackItem.meta.set(toggleUnwrapHistoryKey, {
+            before,
+            after: getRelativeSelection(sync.binding, view.state),
+          } satisfies UnwrapSelection);
+          manager.stopCapturing();
+        }
+      };
+      const restore = ({
+        stackItem,
+        type,
+      }: {
+        stackItem: HistoryItem;
+        type: 'undo' | 'redo';
+      }) => {
+        const saved: UnwrapSelection | undefined = stackItem.meta.get(
+          toggleUnwrapHistoryKey,
+        );
+        const sync = ySyncPluginKey.getState(view.state);
+        if (!saved || !sync?.binding) return;
+        const relative = type === 'undo' ? saved.before : saved.after;
+        const pos = relativePositionToAbsolutePosition(
+          sync.doc,
+          sync.type,
+          relative.anchor,
+          sync.binding.mapping,
+        );
+        // The original text block may have been deleted by a collaborator.
+        if (pos == null || !view.state.doc.resolve(pos).parent.isTextblock)
+          return;
+        view.dispatch(
+          view.state.tr
+            .setSelection(TextSelection.create(view.state.doc, pos))
+            .setMeta('addToHistory', false)
+            .scrollIntoView(),
+        );
+      };
+      manager.on('stack-item-added', remember);
+      manager.on('stack-item-popped', restore);
+      return {
+        destroy() {
+          manager.off('stack-item-added', remember);
+          manager.off('stack-item-popped', restore);
+        },
+      };
+    },
+  });
+}
 
 export interface PageOption {
   id: string;
@@ -33,8 +127,59 @@ export const ToggleSummary = Node.create({
     }),
     0,
   ],
+  addProseMirrorPlugins: () => [toggleUnwrapHistory()],
   addKeyboardShortcuts() {
     return {
+      Backspace: () =>
+        this.editor.commands.command(({ state, tr, dispatch }) => {
+          const { selection } = state;
+          if (!(selection instanceof TextSelection) || !selection.$cursor)
+            return false;
+          const { $cursor } = selection;
+          if (
+            $cursor.parent.type.name !== this.name ||
+            $cursor.parent.content.size !== 0 ||
+            $cursor.depth < 2
+          )
+            return false;
+
+          const toggleDepth = $cursor.depth - 1;
+          const toggle = $cursor.node(toggleDepth);
+          if (toggle.type.name !== 'toggle') return false;
+          const body = toggle.lastChild;
+          const paragraph = body?.firstChild;
+          // Only unwrap the initial empty structure. textContent alone would
+          // also classify images, nested toggles, and other non-text blocks as
+          // empty, and deleting their wrapper would lose the hidden content.
+          // Consume Backspace otherwise so generic/native deletion cannot
+          // normalize the required summary or alter the hidden body.
+          if (
+            body?.type.name !== 'toggleBody' ||
+            body.childCount !== 1 ||
+            paragraph?.type.name !== 'paragraph' ||
+            paragraph.content.size !== 0
+          )
+            return true;
+
+          const pos = $cursor.before(toggleDepth);
+          const $pos = state.doc.resolve(pos);
+          if (
+            !$pos.parent.canReplaceWith(
+              $pos.index(),
+              $pos.index() + 1,
+              paragraph.type,
+            )
+          )
+            return true;
+          if (dispatch) {
+            yUndoPluginKey.getState(state)?.undoManager.stopCapturing();
+            tr.setMeta(toggleUnwrapHistoryKey, true);
+            tr.replaceWith(pos, pos + toggle.nodeSize, paragraph);
+            tr.setSelection(TextSelection.create(tr.doc, pos + 1));
+            tr.scrollIntoView();
+          }
+          return true;
+        }),
       Enter: () => {
         const { $from } = this.editor.state.selection;
         if ($from.parent.type.name !== this.name) return false;
@@ -91,9 +236,31 @@ export const Toggle = Node.create({
       button.type = 'button';
       button.className = 'toggle-disclosure';
       button.contentEditable = 'false';
-      button.textContent = '›';
+      button.spellcheck = false;
       button.setAttribute('aria-label', 'Expand toggle');
       button.setAttribute('aria-expanded', 'false');
+      const icon = document.createElementNS(
+        'http://www.w3.org/2000/svg',
+        'svg',
+      );
+      icon.classList.add('toggle-disclosure-icon');
+      icon.setAttribute('viewBox', '0 0 24 24');
+      icon.setAttribute('width', '16');
+      icon.setAttribute('height', '16');
+      icon.setAttribute('fill', 'none');
+      icon.setAttribute('stroke', 'currentColor');
+      icon.setAttribute('stroke-width', '2');
+      icon.setAttribute('stroke-linecap', 'round');
+      icon.setAttribute('stroke-linejoin', 'round');
+      icon.setAttribute('aria-hidden', 'true');
+      icon.setAttribute('focusable', 'false');
+      const chevron = document.createElementNS(
+        'http://www.w3.org/2000/svg',
+        'path',
+      );
+      chevron.setAttribute('d', 'm9 6 6 6-6 6');
+      icon.append(chevron);
+      button.append(icon);
       const contentDOM = document.createElement('div');
       contentDOM.className = 'toggle-inner';
       button.onclick = () => {

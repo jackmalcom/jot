@@ -104,7 +104,11 @@ export class Jot {
       secret: config.secret,
       trustedOrigins: [config.origin],
       emailAndPassword: { enabled: true, disableSignUp: true },
-      session: { cookieCache: { enabled: false } },
+      session: {
+        expiresIn: 60 * 60 * 24 * 30,
+        updateAge: 60 * 60 * 24,
+        cookieCache: { enabled: false },
+      },
       rateLimit: { enabled: false },
     });
   }
@@ -314,8 +318,19 @@ export class Jot {
     }
     return true;
   }
-  async identify(headers: Headers): Promise<Identity> {
-    const s = await this.auth.api.getSession({ headers });
+  async identify(
+    headers: Headers,
+    responseHeaders?: Headers,
+  ): Promise<Identity> {
+    const { response: s, headers: authHeaders } =
+      await this.auth.api.getSession({
+        headers,
+        returnHeaders: true,
+        // A WebSocket/read-only check cannot deliver the renewed browser cookie.
+        query: { disableRefresh: !responseHeaders },
+      });
+    for (const cookie of authHeaders.getSetCookie())
+      responseHeaders?.append('Set-Cookie', cookie);
     if (!s) throw new Problem(401, 'Please sign in.');
     return {
       id: s.user.id,
@@ -521,6 +536,18 @@ export class Jot {
     return { ok: true };
   }
   async handle(request: Request): Promise<Response> {
+    const sessionHeaders = new Headers();
+    const response = await this.handleRequest(request, sessionHeaders);
+    // Keep the browser's expiry aligned with Better Auth's database renewal,
+    // including when an authenticated route returns an error or image response.
+    for (const cookie of sessionHeaders.getSetCookie())
+      response.headers.append('Set-Cookie', cookie);
+    return response;
+  }
+  private async handleRequest(
+    request: Request,
+    sessionHeaders: Headers,
+  ): Promise<Response> {
     try {
       const url = new URL(request.url);
       const path = url.pathname;
@@ -558,7 +585,7 @@ export class Jot {
         for (const peer of this.peers()) this.valid(peer);
         return response;
       }
-      const identity = await this.identify(request.headers);
+      const identity = await this.identify(request.headers, sessionHeaders);
       if (path === '/api/recent-pages' && request.method === 'GET') {
         return json(
           this.store.all(
